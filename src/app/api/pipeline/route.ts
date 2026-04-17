@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { pipelineStages, deals, contacts } from "@/db/schema";
+import { pipelineStages, deals, contacts, projects } from "@/db/schema";
 import { eq, asc } from "drizzle-orm";
 
 export async function GET() {
@@ -59,12 +59,36 @@ export async function PUT(request: NextRequest) {
       .returning()
       .get();
 
-    return NextResponse.json(result);
+    // Auto-create project if moved to a Won stage
+    const targetStage = db.select().from(pipelineStages).where(eq(pipelineStages.id, body.stageId)).get();
+    if (targetStage?.isWon) {
+      // Only create if no project already exists for this deal
+      const existingProject = db
+        .select()
+        .from(projects)
+        .where(eq(projects.dealId, body.dealId))
+        .get();
+
+      if (!existingProject) {
+        const now = new Date();
+        await db.insert(projects).values({
+          title: existing.title,
+          contactId: existing.contactId ?? undefined,
+          dealId: body.dealId,
+          status: "in_progress",
+          value: existing.value,
+          notes: existing.notes ?? undefined,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    return NextResponse.json({ ...result, projectCreated: targetStage?.isWon ?? false });
   }
 
   // Bulk update stages (from /setup or /customize)
   if (body.stages && Array.isArray(body.stages)) {
-    // Delete existing stages (only if no deals reference them)
     const existingDeals = db.select().from(deals).all();
     if (existingDeals.length > 0) {
       return NextResponse.json(

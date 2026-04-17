@@ -9,16 +9,20 @@ import {
   Activity,
   Settings,
   Briefcase,
+  FolderKanban,
+  Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/pipeline", label: "Pipeline", icon: Kanban },
-  { href: "/contacts", label: "Contactos", icon: Users },
+  { href: "/pipeline", label: "Sales Pipeline", icon: Kanban },
+  { href: "/projects", label: "Projects", icon: FolderKanban },
+  { href: "/contacts", label: "Contacts", icon: Users },
+  { href: "/followups", label: "Follow-ups", icon: Bell },
   { href: "/deals", label: "Deals", icon: Briefcase },
-  { href: "/activities", label: "Actividades", icon: Activity },
-  { href: "/settings", label: "Configuracion", icon: Settings },
+  { href: "/activities", label: "Activities", icon: Activity },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Sidebar() {

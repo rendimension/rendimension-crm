@@ -27,67 +27,80 @@ export function KanbanBoard({ initialColumns }: KanbanBoardProps) {
   const columnsSnapshot = useRef<PipelineColumn[]>(initialColumns);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },
-    })
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
 
   const activeDeal = activeId
-    ? columns
-        .flatMap((col) => col.deals)
-        .find((d) => d.id === activeId)
+    ? columns.flatMap((col) => col.deals).find((d) => d.id === activeId)
     : null;
 
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveId(event.active.id as string);
-    columnsSnapshot.current = columns;
-  }, [columns]);
-
-  const handleDragOver = useCallback((event: DragOverEvent) => {
-    const { active, over } = event;
-    if (!over) return;
-
-    const activeId = active.id as string;
-    const overId = over.id as string;
-
-    // Find which columns the items are in
-    const activeColumn = columns.find((col) =>
-      col.deals.some((d) => d.id === activeId)
+  const handleDelete = useCallback((dealId: string) => {
+    setColumns((prev) =>
+      prev.map((col) => ({
+        ...col,
+        deals: col.deals.filter((d) => d.id !== dealId),
+      }))
     );
-    const overColumn =
-      columns.find((col) => col.id === overId) ||
-      columns.find((col) => col.deals.some((d) => d.id === overId));
+    toast.success("Deal removed.");
+  }, []);
 
-    if (!activeColumn || !overColumn || activeColumn.id === overColumn.id)
-      return;
+  const handleNoteAdded = useCallback(async (dealId: string) => {
+    try {
+      const res = await fetch(`/api/deals/${dealId}`);
+      if (!res.ok) return;
+      const updated = await res.json();
+      setColumns((prev) =>
+        prev.map((col) => ({
+          ...col,
+          deals: col.deals.map((d) =>
+            d.id === dealId ? { ...d, notes: updated.notes } : d
+          ),
+        }))
+      );
+    } catch { /* silent */ }
+  }, []);
 
-    setColumns((prev) => {
-      const activeDeal = activeColumn.deals.find((d) => d.id === activeId);
-      if (!activeDeal) return prev;
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      setActiveId(event.active.id as string);
+      columnsSnapshot.current = columns;
+    },
+    [columns]
+  );
 
-      return prev.map((col) => {
-        if (col.id === activeColumn.id) {
-          return {
-            ...col,
-            deals: col.deals.filter((d) => d.id !== activeId),
-          };
-        }
-        if (col.id === overColumn.id) {
-          return {
-            ...col,
-            deals: [...col.deals, { ...activeDeal, stageId: col.id }],
-          };
-        }
-        return col;
+  const handleDragOver = useCallback(
+    (event: DragOverEvent) => {
+      const { active, over } = event;
+      if (!over) return;
+      const activeId = active.id as string;
+      const overId = over.id as string;
+
+      const activeColumn = columns.find((col) => col.deals.some((d) => d.id === activeId));
+      const overColumn =
+        columns.find((col) => col.id === overId) ||
+        columns.find((col) => col.deals.some((d) => d.id === overId));
+
+      if (!activeColumn || !overColumn || activeColumn.id === overColumn.id) return;
+
+      setColumns((prev) => {
+        const activeDeal = activeColumn.deals.find((d) => d.id === activeId);
+        if (!activeDeal) return prev;
+        return prev.map((col) => {
+          if (col.id === activeColumn.id)
+            return { ...col, deals: col.deals.filter((d) => d.id !== activeId) };
+          if (col.id === overColumn.id)
+            return { ...col, deals: [...col.deals, { ...activeDeal, stageId: col.id }] };
+          return col;
+        });
       });
-    });
-  }, [columns]);
+    },
+    [columns]
+  );
 
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
       const { active, over } = event;
       setActiveId(null);
-
       if (!over) return;
 
       const activeId = active.id as string;
@@ -97,23 +110,21 @@ export function KanbanBoard({ initialColumns }: KanbanBoardProps) {
 
       if (!overColumn) return;
 
-      // Update the deal's stage via API
       try {
         const res = await fetch("/api/pipeline", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dealId: activeId,
-            stageId: overColumn.id,
-          }),
+          body: JSON.stringify({ dealId: activeId, stageId: overColumn.id }),
         });
-        if (!res.ok) {
-          throw new Error("API error");
+        if (!res.ok) throw new Error("API error");
+
+        const data = await res.json();
+        if (data.projectCreated) {
+          toast.success("Deal closed! Project automatically created in In Progress.");
         }
       } catch {
-        // Rollback to pre-drag state
         setColumns(columnsSnapshot.current);
-        toast.error("Error al mover el deal. Se revirtio el cambio.");
+        toast.error("Error moving deal. Change reverted.");
       }
     },
     [columns]
@@ -134,15 +145,18 @@ export function KanbanBoard({ initialColumns }: KanbanBoardProps) {
             id={column.id}
             name={column.name}
             color={column.color}
+            isWon={column.isWon}
             deals={column.deals.map((d) => ({
               id: d.id,
               title: d.title,
               value: d.value,
               contactName: d.contactName || (d.contact?.name ?? null),
-              contactTemperature:
-                d.contactTemperature ||
-                (d.contact?.temperature ?? null),
+              contactTemperature: d.contactTemperature || (d.contact?.temperature ?? null),
               probability: d.probability,
+              lastNote: d.notes ?? null,
+              isWon: column.isWon,
+              onDelete: handleDelete,
+              onNoteAdded: () => handleNoteAdded(d.id),
             }))}
           />
         ))}
@@ -154,14 +168,8 @@ export function KanbanBoard({ initialColumns }: KanbanBoardProps) {
             id={activeDeal.id}
             title={activeDeal.title}
             value={activeDeal.value}
-            contactName={
-              activeDeal.contactName ||
-              (activeDeal.contact?.name ?? null)
-            }
-            contactTemperature={
-              activeDeal.contactTemperature ||
-              (activeDeal.contact?.temperature ?? null)
-            }
+            contactName={activeDeal.contactName || (activeDeal.contact?.name ?? null)}
+            contactTemperature={activeDeal.contactTemperature || (activeDeal.contact?.temperature ?? null)}
             probability={activeDeal.probability}
           />
         ) : null}

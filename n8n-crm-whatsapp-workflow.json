@@ -1,0 +1,313 @@
+{
+  "name": "CRM — WhatsApp Voice to Lead Update",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "crm-whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-whatsapp",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "crm-whatsapp-rendimension"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.body.entry[0].changes[0].value.messages[0].type }}",
+              "rightValue": "audio",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "check-audio",
+      "name": "Is Audio Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v19.0/{{ $('WhatsApp Webhook').item.json.body.entry[0].changes[0].value.messages[0].audio.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-audio-url",
+      "name": "Get Audio URL from Meta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": { "response": { "responseFormat": "file" } }
+        }
+      },
+      "id": "download-audio",
+      "name": "Download Audio File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "binaryPropertyName": "data",
+        "options": {
+          "language": "es",
+          "response_format": "text"
+        }
+      },
+      "id": "whisper-transcribe",
+      "name": "Transcribe Audio (Whisper)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.4,
+      "position": [1120, 200],
+      "credentials": { "openAiApi": { "id": "openai-creds", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.CRM_BASE_URL }}/api/contacts?limit=200",
+        "options": {}
+      },
+      "id": "get-contacts",
+      "name": "Get CRM Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 380]
+    },
+    {
+      "parameters": {
+        "model": "claude-opus-4-5",
+        "messages": {
+          "values": [
+            {
+              "content": "=You are the AI assistant for Rendimension's CRM. Hugo just sent a voice note. Your job:\n\n1. Extract what happened (note/action taken)\n2. Identify which contact is being referred to\n3. Determine what to update in the CRM\n\nVoice note transcription:\n\"{{ $('Transcribe Audio (Whisper)').item.json.text }}\"\n\nAvailable contacts (name, id, email, company):\n{{ $('Get CRM Contacts').item.json.contacts.map(c => `- ${c.name} | ${c.company || 'no company'} | id:${c.id}`).join('\\n') }}\n\nRespond ONLY with a valid JSON object. No explanation, no markdown:\n{\n  \"contactId\": \"<exact id from list, or null if unclear>\",\n  \"contactName\": \"<name>\",\n  \"action\": \"note\" | \"call\" | \"email\" | \"meeting\",\n  \"note\": \"<what happened, in Hugo's words>\",\n  \"nextFollowup\": \"<ISO date string if mentioned, e.g. 2026-04-20, or null>\",\n  \"temperature\": \"hot\" | \"warm\" | \"cold\" | null,\n  \"summary\": \"<1 sentence summary of what you updated>\"\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "claude-analyze",
+      "name": "Claude — Analyze & Route",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [1340, 300],
+      "credentials": { "anthropicApi": { "id": "anthropic-creds", "name": "Anthropic" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.text || $input.item.json.content || '';\nconst match = raw.match(/\\{[\\s\\S]*\\}/);\nif (!match) throw new Error('Claude did not return valid JSON: ' + raw);\nconst parsed = JSON.parse(match[0]);\nreturn [{ json: parsed }];"
+      },
+      "id": "parse-json",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.contactId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ]
+        }
+      },
+      "id": "check-contact-found",
+      "name": "Contact Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.CRM_BASE_URL }}/api/activities",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "type", "value": "={{ $('Parse Claude Response').item.json.action }}" },
+            { "name": "description", "value": "={{ $('Parse Claude Response').item.json.note }}" },
+            { "name": "contactId", "value": "={{ $('Parse Claude Response').item.json.contactId }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-activity",
+      "name": "Log Activity in CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.CRM_BASE_URL }}/api/contacts/{{ $('Parse Claude Response').item.json.contactId }}",
+        "method": "PUT",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "lastContactedAt", "value": "={{ new Date().toISOString() }}" },
+            { "name": "nextFollowupAt", "value": "={{ $('Parse Claude Response').item.json.nextFollowup }}" },
+            { "name": "followupNotes", "value": "={{ $('Parse Claude Response').item.json.note }}" },
+            { "name": "temperature", "value": "={{ $('Parse Claude Response').item.json.temperature }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "update-contact",
+      "name": "Update Contact in CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 360]
+    },
+    {
+      "parameters": {
+        "url": "https://graph.facebook.com/v19.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $('WhatsApp Webhook').item.json.body.entry[0].changes[0].value.messages[0].from }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"✅ CRM actualizado\\n\\n*{{ $('Parse Claude Response').item.json.contactName }}*\\n{{ $('Parse Claude Response').item.json.summary }}\" }\n}",
+        "options": {}
+      },
+      "id": "reply-whatsapp-ok",
+      "name": "Reply WhatsApp ✅",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 280]
+    },
+    {
+      "parameters": {
+        "url": "https://graph.facebook.com/v19.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $('WhatsApp Webhook').item.json.body.entry[0].changes[0].value.messages[0].from }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"⚠️ No pude identificar el contacto. ¿Puedes ser más específico con el nombre?\\n\\nEscuché: {{ $('Transcribe Audio (Whisper)').item.json.text }}\" }\n}",
+        "options": {}
+      },
+      "id": "reply-whatsapp-unclear",
+      "name": "Reply WhatsApp ⚠️ Not Found",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-meta",
+      "name": "Respond 200 to Meta",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [460, 480]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [[{ "node": "Is Audio Message?", "type": "main", "index": 0 }, { "node": "Respond 200 to Meta", "type": "main", "index": 0 }]]
+    },
+    "Is Audio Message?": {
+      "main": [
+        [{ "node": "Get Audio URL from Meta", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Get Audio URL from Meta": {
+      "main": [[{ "node": "Download Audio File", "type": "main", "index": 0 }]]
+    },
+    "Download Audio File": {
+      "main": [[{ "node": "Transcribe Audio (Whisper)", "type": "main", "index": 0 }]]
+    },
+    "Transcribe Audio (Whisper)": {
+      "main": [[{ "node": "Claude — Analyze & Route", "type": "main", "index": 0 }]]
+    },
+    "Get CRM Contacts": {
+      "main": [[{ "node": "Claude — Analyze & Route", "type": "main", "index": 0 }]]
+    },
+    "Claude — Analyze & Route": {
+      "main": [[{ "node": "Parse Claude Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Claude Response": {
+      "main": [[{ "node": "Contact Found?", "type": "main", "index": 0 }]]
+    },
+    "Contact Found?": {
+      "main": [
+        [
+          { "node": "Log Activity in CRM", "type": "main", "index": 0 },
+          { "node": "Update Contact in CRM", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Reply WhatsApp ⚠️ Not Found", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Activity in CRM": {
+      "main": [[{ "node": "Reply WhatsApp ✅", "type": "main", "index": 0 }]]
+    },
+    "Update Contact in CRM": {
+      "main": [[{ "node": "Reply WhatsApp ✅", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [{ "name": "CRM" }],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-16T00:00:00.000Z",
+  "versionId": "crm-whatsapp-v1"
+}

@@ -1,60 +1,52 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { activities, contacts } from "@/db/schema";
-import { eq, isNull, asc } from "drizzle-orm";
+import { contacts } from "@/db/schema";
+import { isNotNull, isNull, sql } from "drizzle-orm";
 
 export async function GET() {
-  const pendingFollowups = db
-    .select({
-      id: activities.id,
-      type: activities.type,
-      description: activities.description,
-      contactId: activities.contactId,
-      dealId: activities.dealId,
-      scheduledAt: activities.scheduledAt,
-      completedAt: activities.completedAt,
-      createdAt: activities.createdAt,
-      contactName: contacts.name,
-      contactCompany: contacts.company,
-    })
-    .from(activities)
-    .leftJoin(contacts, eq(activities.contactId, contacts.id))
-    .where(isNull(activities.completedAt))
-    .orderBy(asc(activities.scheduledAt))
-    .all();
+  const now = new Date();
+  const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+  const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const now = Date.now() / 1000;
+  // Get all active contacts (not closed won / lost)
+  const allContacts = db.select().from(contacts).all();
 
-  const categorized = {
-    overdue: pendingFollowups.filter((f) => {
-      if (!f.scheduledAt) return false;
-      const ts =
-        typeof f.scheduledAt === "number"
-          ? f.scheduledAt
-          : f.scheduledAt.getTime() / 1000;
-      return ts < now;
-    }),
-    today: pendingFollowups.filter((f) => {
-      if (!f.scheduledAt) return false;
-      const ts =
-        typeof f.scheduledAt === "number"
-          ? f.scheduledAt
-          : f.scheduledAt.getTime() / 1000;
-      const startOfDay = Math.floor(now / 86400) * 86400;
-      const endOfDay = startOfDay + 86400;
-      return ts >= startOfDay && ts < endOfDay;
-    }),
-    upcoming: pendingFollowups.filter((f) => {
-      if (!f.scheduledAt) return false;
-      const ts =
-        typeof f.scheduledAt === "number"
-          ? f.scheduledAt
-          : f.scheduledAt.getTime() / 1000;
-      const endOfDay = (Math.floor(now / 86400) + 1) * 86400;
-      return ts >= endOfDay;
-    }),
-    unscheduled: pendingFollowups.filter((f) => !f.scheduledAt),
-  };
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(now);
+  todayEnd.setHours(23, 59, 59, 999);
 
-  return NextResponse.json(categorized);
+  const overdue = allContacts.filter((c) => {
+    if (!c.nextFollowupAt) return false;
+    const d = new Date(c.nextFollowupAt);
+    return d < todayStart;
+  });
+
+  const today = allContacts.filter((c) => {
+    if (!c.nextFollowupAt) return false;
+    const d = new Date(c.nextFollowupAt);
+    return d >= todayStart && d <= todayEnd;
+  });
+
+  const waitingResponse = allContacts.filter((c) => {
+    if (!c.lastContactedAt) return false;
+    const d = new Date(c.lastContactedAt);
+    return d <= threeDaysAgo && !c.nextFollowupAt;
+  });
+
+  const noContact = allContacts.filter((c) => !c.lastContactedAt);
+
+  const upcoming = allContacts.filter((c) => {
+    if (!c.nextFollowupAt) return false;
+    const d = new Date(c.nextFollowupAt);
+    return d > todayEnd && d <= in7Days;
+  });
+
+  return NextResponse.json({
+    overdue,
+    today,
+    waitingResponse,
+    noContact,
+    upcoming,
+  });
 }
