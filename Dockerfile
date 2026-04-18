@@ -17,11 +17,12 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Create data directory
+# Create data directory (volume will be mounted here at runtime)
 RUN mkdir -p data
 
-# Initialize database
-RUN npx tsx scripts/init.ts
+# Copy startup script
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # Expose port
 EXPOSE 3000
@@ -29,4 +30,4 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["npm", "start"]
+CMD ["/app/start.sh"]
